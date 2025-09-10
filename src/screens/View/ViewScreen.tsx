@@ -1,6 +1,6 @@
 import { useFocusEffect } from "@react-navigation/native";
 import React, { useEffect } from "react";
-import { BackHandler, RefreshControl, ScrollView, View } from "react-native";
+import { BackHandler, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import WebView from "react-native-webview";
 import APP_LINK from "../../config/Links";
@@ -15,7 +15,6 @@ const ViewScreen = ({ route, navigation }) => {
   const webViewRef = React.useRef(null);
 
   useEffect(() => {
-    console.log(initialUrl)
     if (initialUrl) {
       setCurrentUrl({ uri: initialUrl });
     } else {
@@ -34,11 +33,6 @@ const ViewScreen = ({ route, navigation }) => {
     React.useCallback(() => {
       const onBackPress = () => {
         if (webViewRef.current) {
-          const urlParts = currentUrl.uri.split('/');
-          console.log(urlParts)
-          console.log(canGoBack)
-          // if (urlParts.length === 4
-          //   || currentUrl.uri.indexOf(APP_LINK + '/login.html') !== -1) {
           if (!canGoBack) {
             BackHandler.exitApp();
           } else {
