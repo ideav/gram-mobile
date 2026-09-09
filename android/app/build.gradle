@@ -82,8 +82,15 @@ android {
         applicationId "com.integram.mobile"
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
-        versionCode 3
-        versionName "1.0"
+        // Номер и дата сборки приходят из CI (.github/workflows/android-apk.yml:
+        // BUILD_NUMBER = github.run_number, BUILD_DATE = время запуска в UTC).
+        // Локальная сборка без CI получает значения по умолчанию. versionName
+        // виден в настройках Android и в штампе сборки в приложении (issue #6).
+        def buildNumber = (System.getenv("BUILD_NUMBER") ?: "3") as int
+        def buildDate = System.getenv("BUILD_DATE") ?: "dev"
+
+        versionCode buildNumber
+        versionName "1.0.${buildNumber}+${buildDate}"
 
         def formattedDate = new Date().format('dd.MM.yy')
         def taskNames = gradle.startParameter.taskNames

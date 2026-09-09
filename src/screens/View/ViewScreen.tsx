@@ -1,15 +1,67 @@
 import { useFocusEffect } from "@react-navigation/native";
 import React, { useEffect } from "react";
-import { BackHandler, Platform, RefreshControl, ScrollView, View } from "react-native";
+import {
+  ActivityIndicator,
+  BackHandler,
+  Platform,
+  StyleSheet,
+  Text,
+  View,
+} from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import WebView from "react-native-webview";
 import APP_LINK from "../../config/Links";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 
 // Свайп сверху вниз = перезагрузка страницы, как в браузере.
-// На iOS это умеет сам WebView (проп pullToRefreshEnabled), на Android этого
-// пропа нет — там оборачиваем WebView в ScrollView с RefreshControl.
+// На iOS это умеет сам WebView (проп pullToRefreshEnabled). На Android такого
+// пропа нет, а RefreshControl вокруг WebView не срабатывает — WebView забирает
+// жест себе, и до RefreshControl он не доходит (issue #6, см. также
+// react-native-webview#103). Поэтому на Android жест ловит сама страница:
+// инжектированный детектор overscroll (PULL_TO_REFRESH_JS) шлёт сообщение в RN,
+// а RN перезагружает страницу и показывает свой индикатор поверх WebView.
 const HAS_NATIVE_PULL_TO_REFRESH = Platform.OS === 'ios';
+
+// Детектор «страница на самом верху + потянули вниз». Идемпотентен: повторная
+// инъекция после каждой загрузки (onLoadEnd) не плодит дубликаты обработчиков.
+const PULL_TO_REFRESH_JS = `
+(function() {
+  if (window.__integramPullToRefresh) return true;
+  window.__integramPullToRefresh = true;
+  var THRESHOLD = 70; // px свайпа вниз для срабатывания
+  var startY = 0, startX = 0, atTop = false, fired = false;
+  var pageTop = function() {
+    return (window.scrollY || document.documentElement.scrollTop || document.body.scrollTop || 0) <= 0;
+  };
+  window.addEventListener('touchstart', function(e) {
+    startY = e.touches[0].clientY;
+    startX = e.touches[0].clientX;
+    atTop = pageTop();
+    fired = false;
+  }, {passive: true});
+  window.addEventListener('touchmove', function(e) {
+    if (!atTop || fired) return;
+    var dy = e.touches[0].clientY - startY;
+    var dx = e.touches[0].clientX - startX;
+    // Вертикальный свайп вниз заметно длиннее горизонтали — не мешаем
+    // горизонтальным жестам внутри страницы.
+    if (dy > THRESHOLD && dy > Math.abs(dx) * 2) {
+      fired = true;
+      window.ReactNativeWebView && window.ReactNativeWebView.postMessage('__pullToRefresh');
+    }
+  }, {passive: true});
+  return true;
+})();
+`;
+
+// «Номер и дата сборки» для штампа в правом нижнем углу (issue #6).
+// versionName/versionCode прошиваются при сборке в CI (android/app/build.gradle).
+function buildStamp() {
+  const c = Platform.constants;
+  if (c && c.appVersion) return String(c.appVersion);
+  if (c && c.buildVersion) return `build ${c.buildVersion}`;
+  return 'dev';
+}
 
 const ViewScreen = ({ route, navigation }) => {
   const { initialUrl } = route.params;
@@ -17,11 +69,6 @@ const ViewScreen = ({ route, navigation }) => {
   const [currentUrl, setCurrentUrl] = React.useState({ uri: '' });
   const [canGoBack, setCanGoBack] = React.useState(false);
   const [refreshing, setRefreshing] = React.useState(false);
-  // RefreshControl срабатывает, когда его ребёнок (ScrollView) не может
-  // прокрутиться вверх, а он не может никогда — высота содержимого равна экрану.
-  // Поэтому жест разрешаем только пока сама страница в WebView стоит на самом
-  // верху, иначе потяг вниз посреди страницы перезагружал бы её вместо скролла.
-  const [atPageTop, setAtPageTop] = React.useState(true);
   const insets = useSafeAreaInsets();
   const webViewRef = React.useRef(null);
 
@@ -30,7 +77,6 @@ const ViewScreen = ({ route, navigation }) => {
       setCurrentUrl({ uri: initialUrl });
     } else {
       AsyncStorage.getItem('lastUrl').then(lastUrl => {
-        console.log(lastUrl);
         if (!lastUrl || lastUrl === 'about:blank') {
           setCurrentUrl(source);
         } else {
@@ -65,10 +111,16 @@ const ViewScreen = ({ route, navigation }) => {
     }, [currentUrl.uri])
   );
 
-  const onRefresh = React.useCallback(() => {
+  const reload = React.useCallback(() => {
     setRefreshing(true);
     webViewRef.current?.reload();
   }, []);
+
+  const onMessage = React.useCallback((e) => {
+    if (e.nativeEvent.data === '__pullToRefresh') {
+      reload();
+    }
+  }, [reload]);
 
   const webView = (
     <WebView
@@ -84,25 +136,25 @@ const ViewScreen = ({ route, navigation }) => {
         await AsyncStorage.setItem('lastUrl', e.url);
       }}
       injectedJavaScriptBeforeContentLoaded="document.isMobileApp = true;"
+      injectedJavaScript={HAS_NATIVE_PULL_TO_REFRESH ? undefined : PULL_TO_REFRESH_JS}
+      onMessage={onMessage}
       onLoadStart={(e) => {
         // webViewRef.current?.injectJavaScript(blockingScript);
         setCanGoBack(e.nativeEvent.canGoBack);
-        // Новая страница открывается сверху, а onScroll на ней ещё не приходил.
-        setAtPageTop(true);
       }}
       onLoadProgress={(e) => {
         // console.log('canGoBack', e.nativeEvent.canGoBack)
       }}
       onLoadEnd={(e) => {
         setRefreshing(false);
+        if (!HAS_NATIVE_PULL_TO_REFRESH) {
+          // Детектор должен жить и на странице с ошибкой (нет сети) — там
+          // свайп-обновление нужнее всего, а injectedJavaScript туда не доходит.
+          webViewRef.current?.injectJavaScript(PULL_TO_REFRESH_JS);
+        }
       }}
       onError={(e) => {
-        // Иначе индикатор крутился бы вечно на неудачной перезагрузке.
         setRefreshing(false);
-      }}
-      onScroll={(e) => {
-        const top = e.nativeEvent.contentOffset.y <= 0;
-        setAtPageTop(prev => (prev === top ? prev : top));
       }}
       setSupportMultipleWindows={false}
       allowsFullscreenVideo
@@ -111,29 +163,38 @@ const ViewScreen = ({ route, navigation }) => {
       javaScriptEnabled
       cacheEnabled
       pullToRefreshEnabled
-      nestedScrollEnabled
     />
   );
 
   return (
     <View style={{ flex: 1, paddingTop: insets.top, paddingBottom: insets.bottom }}>
-      {HAS_NATIVE_PULL_TO_REFRESH ? webView : (
-        <ScrollView
-          style={{ flex: 1 }}
-          contentContainerStyle={{ flex: 1 }}
-          refreshControl={
-            <RefreshControl
-              refreshing={refreshing}
-              onRefresh={onRefresh}
-              enabled={atPageTop}
-            />
-          }
-        >
-          {webView}
-        </ScrollView>
+      {webView}
+      {refreshing && !HAS_NATIVE_PULL_TO_REFRESH && (
+        <ActivityIndicator style={styles.spinner} size="small" />
       )}
+      <View pointerEvents="none" style={styles.stampBox}>
+        <Text style={styles.stamp}>{buildStamp()}</Text>
+      </View>
     </View>
   );
 };
+
+const styles = StyleSheet.create({
+  spinner: {
+    position: 'absolute',
+    top: 12,
+    alignSelf: 'center',
+  },
+  stampBox: {
+    position: 'absolute',
+    right: 10,
+    bottom: 2,
+  },
+  // «Почти прозрачные цифры» — водяной знак, не мешает контенту страницы.
+  stamp: {
+    fontSize: 10,
+    color: 'rgba(127,127,127,0.28)',
+  },
+});
 
 export default ViewScreen;
