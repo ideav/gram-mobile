@@ -1,16 +1,11 @@
-import { Image, Linking, ScrollView, StatusBar, StyleSheet, Text, TouchableHighlight, useColorScheme, useWindowDimensions, View } from 'react-native';
+import { StatusBar } from 'react-native';
 import {
   SafeAreaProvider,
-  useSafeAreaInsets,
 } from 'react-native-safe-area-context';
-import { ThemedText, useTheme } from './src/theme/Theme';
-import Links from './src/config/Links';
-import { createNativeStackNavigator } from '@react-navigation/native-stack';
-import { createNavigationContainerRef, getStateFromPath, NavigationContainer } from '@react-navigation/native';
-import MainScreen from './src/screens/Main/MainScreen';
-import ViewScreen from './src/screens/View/ViewScreen';
-import { useEffect, useState } from 'react';
 import APP_LINK from './src/config/Links';
+import { createNativeStackNavigator } from '@react-navigation/native-stack';
+import { NavigationContainer } from '@react-navigation/native';
+import ViewScreen from './src/screens/View/ViewScreen';
 
 function App() {
   // const isDarkMode = useColorScheme() === 'dark';
@@ -18,9 +13,8 @@ function App() {
 
   const Stack = createNativeStackNavigator();
 
-  const [initialUrl, setInitialUrl] = useState<null | string>(null);
   const linking = {
-    prefixes: ['https://app.integram.io'],
+    prefixes: ['https://ideav.ru'],
     config: {
       screens: {
         View: {
@@ -28,7 +22,7 @@ function App() {
         }
       },
     },
-    getStateFromPath: (path, config) => {
+    getStateFromPath: (path) => {
       return {
         routes: [
           {
@@ -48,7 +42,7 @@ function App() {
           screenOptions={{ headerShown: false }}
           initialRouteName='View'
         >
-          <Stack.Screen name="View" component={ViewScreen} initialParams={{ initialUrl }} />
+          <Stack.Screen name="View" component={ViewScreen} initialParams={{ initialUrl: null }} />
         </Stack.Navigator>
       </NavigationContainer>
     </SafeAreaProvider>
