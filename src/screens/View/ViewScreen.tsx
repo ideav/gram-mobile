@@ -24,32 +24,64 @@ const HAS_NATIVE_PULL_TO_REFRESH = Platform.OS === 'ios';
 
 // Детектор «страница на самом верху + потянули вниз». Идемпотентен: повторная
 // инъекция после каждой загрузки (onLoadEnd) не плодит дубликаты обработчиков.
+//
+// Обновляемся только если жест начался ровно из верхней точки (issue #8): свайп,
+// которым страницу докручивают вверх, должен упереться в начало и ничего не
+// перезагрузить. Поэтому «мы наверху» проверяется в момент touchstart и потом
+// ещё раз на каждом touchmove — если контейнер за время жеста уехал вниз,
+// жест уже не «из верхней точки».
 const PULL_TO_REFRESH_JS = `
 (function() {
   if (window.__integramPullToRefresh) return true;
   window.__integramPullToRefresh = true;
-  var THRESHOLD = 70; // px свайпа вниз для срабатывания
-  var startY = 0, startX = 0, atTop = false, fired = false;
-  var pageTop = function() {
+  // Величина овер-скролла для срабатывания — 10% высоты экрана (issue #8).
+  // Считаем на каждый жест: поворот экрана меняет innerHeight.
+  var threshold = function() {
+    return (window.innerHeight || (window.screen && window.screen.height) || 600) * 0.1;
+  };
+  // Прокручиваемые предки точки касания. Страница может скроллиться не окном,
+  // а внутренним контейнером — тогда window.scrollY всегда 0 и «мы на самом
+  // верху» было бы вечно истинным. Собираем список один раз на touchstart:
+  // getComputedStyle на каждом touchmove — слишком дорого.
+  var scrollersOf = function(el) {
+    var list = [];
+    for (; el && el.nodeType === 1; el = el.parentElement) {
+      var oy = window.getComputedStyle(el).overflowY;
+      if ((oy === 'auto' || oy === 'scroll' || oy === 'overlay') && el.scrollHeight > el.clientHeight + 1) {
+        list.push(el);
+      }
+    }
+    return list;
+  };
+  var atTop = function(list) {
+    for (var i = 0; i < list.length; i++) {
+      if (list[i].scrollTop > 0) return false;
+    }
     return (window.scrollY || document.documentElement.scrollTop || document.body.scrollTop || 0) <= 0;
   };
+  var startY = 0, startX = 0, scrollers = [], armed = false, fired = false;
   window.addEventListener('touchstart', function(e) {
-    startY = e.touches[0].clientY;
-    startX = e.touches[0].clientX;
-    atTop = pageTop();
+    var touch = e.touches[0];
+    startY = touch.clientY;
+    startX = touch.clientX;
+    scrollers = scrollersOf(touch.target);
+    armed = e.touches.length === 1 && atTop(scrollers);
     fired = false;
-  }, {passive: true});
+  }, {passive: true, capture: true});
   window.addEventListener('touchmove', function(e) {
-    if (!atTop || fired) return;
+    if (!armed || fired) return;
+    // Мультитач — это масштабирование, а не свайп-обновление.
+    if (e.touches.length !== 1) { armed = false; return; }
+    if (!atTop(scrollers)) { armed = false; return; }
     var dy = e.touches[0].clientY - startY;
     var dx = e.touches[0].clientX - startX;
     // Вертикальный свайп вниз заметно длиннее горизонтали — не мешаем
     // горизонтальным жестам внутри страницы.
-    if (dy > THRESHOLD && dy > Math.abs(dx) * 2) {
+    if (dy > threshold() && dy > Math.abs(dx) * 2) {
       fired = true;
       window.ReactNativeWebView && window.ReactNativeWebView.postMessage('__pullToRefresh');
     }
-  }, {passive: true});
+  }, {passive: true, capture: true});
   return true;
 })();
 `;
